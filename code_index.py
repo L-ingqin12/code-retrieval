@@ -112,11 +112,61 @@ LANG_PATTERNS = {
         ],
     },
     "cpp": {
-        "extensions": [".cpp", ".cc", ".cxx", ".c++", ".hpp", ".h", ".hh", ".hxx"],
+        "extensions": [".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hp", ".hh", ".hxx", ".h", ".h++", ".inl"],
         "symbols": [
-            (r"^\s*(?:template\s*<[^>]*>\s*)?class\s+(?:\w+\s+)?(\w+)", "class", 1),
-            (r"^\s*(?:template\s*<[^>]*>\s*)?struct\s+(\w+)", "struct", 1),
-            (r"^\s*(?:virtual\s+|static\s+|inline\s+|const\s+)*[\w:]+\s+(\w+)\s*\([^)]*\)\s*(?:const\s*)?(?:\{|override)", "function", 1),
+            # Classes & structs (including forward decls and templates)
+            (r"^\s*(?:template\s*<[^>]*>\s*)?(?:class|struct)\s+(?:__declspec\s*\([^)]*\)\s*)?(?:[a-zA-Z_]\w*(?:::))?\s*(\w+)\s*(?:\s*:\s*[^{;]*)?\s*[;{]", "class", 1),
+            # Enum (regular and enum class)
+            (r"^\s*enum\s+(?:class\s+|struct\s+)?(\w+)", "enum", 1),
+            # Namespace
+            (r"^\s*namespace\s+(\w+)\s*\{", "namespace", 1),
+            # Constructor: ClassName::ClassName(  or  ClassName(
+            (r"^\s*(?:\w+(?:::))?\s*(\w+)\s*::\s*\1\s*\([^)]*\)\s*(?:const\s*)?\s*(?:noexcept\s*)?\s*(?::\s*[^{]*)?\s*\{", "constructor", 1),
+            (r"^\s*(\w+)\s*\([^)]*\)\s*(?::\s*[^{]*)?\s*\{", "constructor", 1),  # in-class constructor
+            # Destructor
+            (r"^\s*(?:\w+(?:::))?\s*~(\w+)\s*\([^)]*\)\s*(?:noexcept\s*)?\s*(?:override\s*)?\s*(?:final\s*)?\s*\{", "destructor", 1),
+            # Method: ClassName::methodName(  — match qualified names (ReturnType ClassName::method(...))
+            (r"^\s*(?:template\s*<[^>]*>\s*)?(?:virtual\s+|static\s+|inline\s+|explicit\s+|constexpr\s+|consteval\s+)*(?:[\w:]+(?:<[^>]*>)?\s+)+(\w+)\s*::\s*(\w+)\s*\([^)]*\)\s*(?:const\s*)?\s*(?:noexcept\s*)?\s*(?:override\s*)?\s*(?:final\s*)?\s*(?::\s*[^{]*)?\s*\{", "method", 2),
+            # Simple method (in-class definition without ClassName::)
+            (r"^\s*(?:virtual\s+|static\s+|inline\s+|explicit\s+|constexpr\s+|consteval\s+)*(?:[\w:]+(?:<[^>]*>)?\s+)+(\w+)\s*\([^)]*\)\s*(?:const\s*)?\s*(?:noexcept\s*)?\s*(?:override\s*)?\s*(?:final\s*)?\s*(?::\s*[^{]*)?\s*\{", "method", 1),
+            # Template function (template<T> ReturnType name(...))
+            (r"^\s*template\s*<[^>]*>\s*(?:[\w:]+(?:<[^>]*>)?\s+)+(\w+)\s*\([^)]*\)\s*(?:const\s*)?\s*(?:noexcept\s*)?\s*\{", "function", 1),
+            # Operator overloading
+            (r'^\s*(?:[\w:]+(?:<[^>]*>)?\s+)*(?:operator\s*(?:[+\-*/%&|^~!=<>]+|\[\]|\(\)|new|delete|""_|->|<=>))\s*\([^)]*\)\s*(?:const\s*)?\s*\{', "operator", 1),
+            # Free function / static method (ReturnType name(...))
+            (r"^\s*(?:virtual\s+|static\s+|inline\s+|explicit\s+|constexpr\s+|consteval\s+)*(?:[\w:]+(?:<[^>]*>)?\s+)+(\w+)\s*\([^)]*\)\s*(?:const\s*)?\s*(?:noexcept\s*)?\s*\{", "function", 1),
+            # using alias
+            (r"^\s*using\s+(\w+)\s*=", "type_alias", 1),
+            # typedef
+            (r"^\s*typedef\s+.+\s+(\w+)\s*;", "typedef", 1),
+            # C++20 concept
+            (r"^\s*template\s*<[^>]*>\s*concept\s+(\w+)\s*=", "concept", 1),
+            # Coroutine: function containing co_await/co_return/co_yield in body
+            (r"^\s*(?:[\w:]+\s+)+(\w+)\s*\([^)]*\)\s*\{[^}]*\bco_(?:await|return|yield)\b", "coroutine", 1),
+            # Coroutine return types (task<T>, lazy<T>, generator<T>, async_generator<T>, including qualified: exec::task<T>)
+            (r"^\s*(?:[\w:]+(?:<[^>]*>)?\s+)*(?:[\w:]*task|[\w:]*lazy|[\w:]*generator|[\w:]*async_generator|[\w:]*eager_task|[\w:]*shared_task)\s*<\s*[^>]*>\s*(\w+)\s*\([^)]*\)", "coroutine", 1),
+            # stdexec sender factory / adaptor
+            (r"^\s*(?:[\w:]+\s+)+(?:exec|stdexec)::(\w+)", "stdexec_sender", 1),
+            # stdexec::then / let_value / upon_error / etc. in pipeline
+            (r"^\s*\|\s*(?:exec|stdexec)::(\w+)", "stdexec_adaptor", 1),
+        ],
+        "imports": [
+            (r'^\s*#include\s+[<"]([^>"]+)[>"]', [1]),
+        ],
+    },
+    "c": {
+        "extensions": [".c"],
+        "symbols": [
+            # Struct
+            (r"^\s*(?:typedef\s+)?struct\s+(?:__attribute__\s*\([^)]*\)\s*)?(\w+)\s*\{", "struct", 1),
+            # Enum
+            (r"^\s*enum\s+(\w+)", "enum", 1),
+            # Function definition
+            (r"^\s*(?:static\s+|inline\s+|__attribute__\s*\([^)]*\)\s*)*(?:[\w*]+\s+)+(\w+)\s*\([^)]*\)\s*(?:\{|__attribute__)", "function", 1),
+            # Function pointer typedef
+            (r"^\s*typedef\s+.+\(\s*\*\s*(\w+)\s*\)\s*\([^)]*\)\s*;", "typedef", 1),
+            # Regular typedef
+            (r"^\s*typedef\s+.+\s+(\w+)\s*;", "typedef", 1),
         ],
         "imports": [
             (r'^\s*#include\s+[<"]([^>"]+)[>"]', [1]),
@@ -142,6 +192,31 @@ LANG_PATTERNS = {
             (r"""^\s*(?:source|\.)\s+['\"]?([^'\"\s]+)['\"]?""", [1]),
         ],
     },
+    "capnp": {
+        "extensions": [".capnp"],
+        "symbols": [
+            # Struct (with optional generic params)
+            (r"^\s*struct\s+(\w+)", "struct", 1),
+            # Interface
+            (r"^\s*interface\s+(\w+)", "interface", 1),
+            # Enum
+            (r"^\s*enum\s+(\w+)", "enum", 1),
+            # Const (top-level constant)
+            (r"^\s*const\s+\w+\s*:\w+\s+(\w+)\s*=", "constant", 1),
+            # Annotation definition
+            (r"^\s*annotation\s+(\w+)", "annotation", 1),
+            # Using / type alias
+            (r"^\s*using\s+(\w+)\s*=", "type_alias", 1),
+            # Group (inline union/group)
+            (r"^\s*(?:union|group)\s*\{", "group", 1),
+            # Top-level method (on interface)
+            (r"^\s*(\w+)\s*@\d+\s*\([^)]*\)\s*(?:->\s*\w+)?\s*;", "method", 1),
+        ],
+        "imports": [
+            # import "/path/to/file.capnp"
+            (r'^\s*using\s+(?:import\s+)?(?:["\']([^"\']+)["\']|([\w.]+))', [1, 2]),
+        ],
+    },
 }
 
 ALWAYS_IGNORE = {
@@ -150,18 +225,26 @@ ALWAYS_IGNORE = {
     "target", ".next", ".nuxt", "vendor", "bower_components",
     ".idea", ".vscode", ".vs", "*.min.js", "*.min.css", "*.bundle.js",
     "*.generated.*", "*.pb.go", "*.pb.cc", "*.pb.h",
+    "*.capnp.h", "*.capnp.c++",  # Cap'n Proto generated code
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
     "Cargo.lock", "Gemfile.lock", "poetry.lock", "Pipfile.lock",
     ".DS_Store", "Thumbs.db",
+    ".repo",  # Android/AOSP repo tool manifest
+    # C/C++ build artifacts
+    "CMakeFiles", "CMakeCache.txt", "cmake-build-*", "build", "out",
+    "*.o", "*.obj", "*.a", "*.so", "*.dylib", "*.dll", "*.exe",
+    "*.pch", "*.gch", "*.s", "*.ii", "*.i", "Makefile.in",
+    "autom4te.cache", "config.status", "config.log",
 }
 
 ENTRY_INDICATORS = [
-    "main.py", "main.ts", "main.go", "main.rs", "main.cpp", "main.c",
+    "main.py", "main.ts", "main.go", "main.rs", "main.cpp", "main.c", "main.cc",
     "app.py", "app.ts", "server.py", "server.ts", "server.go",
     "index.ts", "index.js", "index.tsx", "index.jsx",
-    "cmd/", "cmd/main.go", "src/main/",
+    "cmd/", "cmd/main.go", "src/main/", "src/main.cpp",
     "__main__.py", "__init__.py",
     "Program.cs", "Application.java",
+    "CMakeLists.txt", "Makefile", "configure.ac", "configure.in",
 ]
 
 CONFIG_INDICATORS = [
@@ -195,12 +278,35 @@ def _git(args: list[str], cwd: str, timeout: int = 15) -> str:
 
 
 def is_git_repo(root: str) -> bool:
-    """Check if root is inside a git repository."""
+    """Check if root is inside a git repository. Handles repo-managed trees."""
     try:
         _git(["rev-parse", "--git-dir"], root)
         return True
     except Exception:
-        return False
+        pass
+    # Check for repo-managed tree (Android/AOSP style): .repo/ at root, sub-projects have .git
+    if os.path.isdir(os.path.join(root, ".repo")):
+        return True
+    return False
+
+
+def is_repo_managed(root: str) -> bool:
+    """Check if the project root is managed by the 'repo' tool."""
+    return os.path.isdir(os.path.join(root, ".repo"))
+
+
+def find_sub_git_roots(root: str) -> list[str]:
+    """In a repo-managed tree, find all subdirectories that are git repos."""
+    sub_repos: list[str] = []
+    if not is_repo_managed(root):
+        return sub_repos
+    for dirpath, dirnames, _filenames in os.walk(root):
+        # Skip .repo and build dirs
+        dirnames[:] = [d for d in dirnames if d not in ALWAYS_IGNORE and not d.startswith(".")]
+        if ".git" in dirnames:
+            sub_repos.append(dirpath)
+            dirnames.remove(".git")  # Don't recurse into .git
+    return sub_repos
 
 
 def get_git_info(root: str) -> dict:
@@ -290,9 +396,14 @@ def detect_language(filepath: str) -> str | None:
     ext = os.path.splitext(filepath)[1].lower()
     if not ext:
         base = os.path.basename(filepath)
-        if base in ("Dockerfile", "Makefile", "Justfile"):
+        if base in ("Dockerfile", "Makefile", "Justfile", "CMakeLists.txt"):
             return "makefile"
+        if base.endswith(".capnp"):
+            return "capnp"
         return None
+    # Cap'n Proto (double extension like .capnp.h → detect as capnp)
+    if filepath.endswith(".capnp"):
+        return "capnp"
     for lang, cfg in LANG_PATTERNS.items():
         if ext in cfg["extensions"]:
             return lang
@@ -351,6 +462,41 @@ def extract_symbols(lines: list[str], lang: str) -> list[dict]:
     return symbols
 
 
+def detect_coroutines(lines: list[str], symbols: list[dict]) -> list[dict]:
+    """Post-process C++ symbols: scan function bodies for coroutine keywords."""
+    # Build line-indexed map of function/method symbols
+    func_lines: dict[int, int] = {}  # line -> index in symbols list
+    for idx, sym in enumerate(symbols):
+        if sym["type"] in ("function", "method", "coroutine"):
+            func_lines[sym["line"]] = idx
+
+    # Scan for coroutine keywords in function bodies
+    in_function = False
+    func_start = 0
+    brace_depth = 0
+
+    for i, line in enumerate(lines, 1):
+        if not in_function:
+            # Check if this line starts a function
+            if i in func_lines:
+                in_function = True
+                func_start = i
+                brace_depth = line.count("{") - line.count("}")
+                if brace_depth <= 0:
+                    in_function = False
+        else:
+            brace_depth += line.count("{") - line.count("}")
+            # Check for coroutine keywords
+            if re.search(r'\bco_(?:await|return|yield)\b', line):
+                if func_start in func_lines:
+                    symbols[func_lines[func_start]]["type"] = "coroutine"
+                    symbols[func_lines[func_start]]["is_coroutine"] = True
+            if brace_depth <= 0:
+                in_function = False
+
+    return symbols
+
+
 def extract_imports(lines: list[str], lang: str) -> list[str]:
     """Regex-extract imports from file lines."""
     cfg = LANG_PATTERNS.get(lang)
@@ -398,10 +544,14 @@ def _index_content(
     """Index file content into entry dict. Shared by FS and git modes."""
     lines = content.split("\n")
     symbols = extract_symbols(lines, lang)
+    # Post-process: detect coroutines in C++ function bodies
+    if lang in ("cpp", "c"):
+        symbols = detect_coroutines(lines, symbols)
     imports = extract_imports(lines, lang)
     exports = [s["name"] for s in symbols if s["type"] in (
         "class", "function", "async_function", "struct", "enum", "trait",
-        "interface", "type", "module", "method",
+        "interface", "type", "module", "method", "namespace", "constructor",
+        "destructor", "operator", "concept",
     )]
     line_count = len(lines)
     if len(content) >= 200_000:
@@ -529,7 +679,7 @@ def build_dir_map(file_entries: list[dict]) -> dict[str, dict]:
 
 def smart_truncate_symbols(entries: list[dict], max_per_file: int) -> list[dict]:
     """Truncate symbol lists per file to keep index compact."""
-    priority_types = {"class", "struct", "interface", "trait", "enum", "module"}
+    priority_types = {"class", "struct", "interface", "trait", "enum", "module", "coroutine", "namespace", "concept"}
     for entry in entries:
         if len(entry.get("symbols", [])) > max_per_file:
             kept = [s for s in entry["symbols"] if s["type"] in priority_types]
@@ -725,7 +875,16 @@ def main():
 
     # ── Git info ──
     git_info: dict = {}
-    if is_git_repo(root):
+    if is_repo_managed(root):
+        sub_repos = find_sub_git_roots(root)
+        git_info = {"commit": None, "branch": None, "short_commit": None, "tag": None,
+                     "describe": "repo-managed", "dirty": None, "sub_repos": sub_repos}
+        print(f"  Repo-managed: {len(sub_repos)} sub-repositories", file=sys.stderr)
+        for sr in sub_repos[:5]:
+            print(f"    {os.path.relpath(sr, root)}", file=sys.stderr)
+        if len(sub_repos) > 5:
+            print(f"    ... and {len(sub_repos) - 5} more", file=sys.stderr)
+    elif is_git_repo(root):
         git_info = get_git_info(root)
         print(f"  Git: branch={git_info.get('branch')} commit={git_info.get('short_commit')}", file=sys.stderr)
     else:
