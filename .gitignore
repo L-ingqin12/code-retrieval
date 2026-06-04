@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.code-index/
+.code-index.json
+.DS_Store
+.venv/

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "code-retrieval": {
+      "command": "python",
+      "args": [
+        "/path/to/code-retrieval/mcp_server.py",
+        "--project",
+        "${projectDir}"
+      ]
+    }
+  }
+}
