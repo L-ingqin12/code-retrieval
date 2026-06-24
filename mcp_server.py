@@ -170,6 +170,43 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "code_graph_stats",
+        "description": "Get knowledge graph statistics: node count by type, edge count by type, total symbols. Use to understand the scale and composition of the indexed codebase.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "code_graph_trace",
+        "description": "Trace CALLS through the knowledge graph using BFS. Given a function name, show what it calls (outbound) or who calls it (inbound), up to a specified depth. This is function-level call tracing, not file-level imports.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Function/symbol name to trace"},
+                "depth": {"type": "integer", "description": "Traversal depth (default: 3)"},
+                "direction": {"type": "string", "description": "'outbound' (what does it call) or 'inbound' (who calls it). Default: outbound"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "code_graph_dead_code",
+        "description": "Find potentially dead code — functions/methods that have no inbound CALLS edges (nobody calls them) and no outbound CALLS edges (they don't call anything). Excludes entry points.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "code_graph_architecture",
+        "description": "Analyze codebase architecture from the knowledge graph: community structure (Louvain), entry points, hub nodes, and layer analysis. Use to understand module boundaries and architectural patterns.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
 
 # ── Tool dispatcher ─────────────────────────────────────────────────
@@ -273,8 +310,136 @@ def run_tool(project_root: str, tool_name: str, args: dict) -> str:
             cmd.extend(["--since", args["since"]])
         return _run_subprocess(cmd)
 
+    elif tool_name == "code_graph_stats":
+        return _run_graph_tool(project_root, "stats")
+
+    elif tool_name == "code_graph_trace":
+        name = args["name"]
+        depth = str(args.get("depth", 3))
+        direction = args.get("direction", "outbound")
+        return _run_graph_tool(project_root, "trace", name, depth, direction)
+
+    elif tool_name == "code_graph_dead_code":
+        return _run_graph_tool(project_root, "dead")
+
+    elif tool_name == "code_graph_architecture":
+        return _run_graph_tool(project_root, "arch")
+
     else:
         return f"Unknown tool: {tool_name}"
+
+
+def _run_graph_tool(project_root: str, action: str, *args: str) -> str:
+    """Query the SQLite knowledge graph directly (no subprocess)."""
+    import sqlite3
+    db_path = os.path.join(project_root, ".code-graph.db")
+    if not os.path.isfile(db_path):
+        return "No graph database found. Build it first with code_index_build."
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    lines: list[str] = []
+
+    try:
+        if action == "stats":
+            node_count = conn.execute("SELECT COUNT(*) as n FROM nodes").fetchone()["n"]
+            edge_count = conn.execute("SELECT COUNT(*) as n FROM edges").fetchone()["n"]
+            lines.append(f"Graph: {node_count} nodes, {edge_count} edges\n")
+            lines.append("Node types:")
+            for r in conn.execute("SELECT type, COUNT(*) as cnt FROM nodes GROUP BY type ORDER BY cnt DESC"):
+                lines.append(f"  {r['type']:<20} {r['cnt']:>6}")
+            lines.append("\nEdge types:")
+            for r in conn.execute("SELECT type, COUNT(*) as cnt FROM edges GROUP BY type ORDER BY cnt DESC"):
+                lines.append(f"  {r['type']:<20} {r['cnt']:>6}")
+            # Communities
+            comm_count = conn.execute("SELECT COUNT(DISTINCT community_id) as n FROM community").fetchone()["n"]
+            if comm_count:
+                lines.append(f"\nCommunities: {comm_count}")
+
+        elif action == "trace":
+            name, depth, direction = args
+            depth = int(depth)
+            # Find the symbol node
+            nodes = conn.execute(
+                "SELECT id, name, file_path, line, type FROM nodes WHERE name=? LIMIT 5", (name,)
+            ).fetchall()
+            if not nodes:
+                return f"Symbol '{name}' not found in graph."
+            for node in nodes:
+                lines.append(f"# Trace {direction} from [{node['type']}] {node['name']} ({node['file_path']}:{node['line']})")
+                # BFS traversal
+                visited = {node["id"]}
+                queue = [(node["id"], 0)]
+                while queue:
+                    nid, d = queue.pop(0)
+                    if d > depth:
+                        continue
+                    if direction == "outbound":
+                        edges = conn.execute(
+                            "SELECT e.target_id, n.name, n.type, n.file_path, n.line FROM edges e JOIN nodes n ON e.target_id=n.id WHERE e.source_id=? AND e.type='CALLS' LIMIT 20", (nid,)
+                        ).fetchall()
+                    else:
+                        edges = conn.execute(
+                            "SELECT e.source_id, n.name, n.type, n.file_path, n.line FROM edges e JOIN nodes n ON e.source_id=n.id WHERE e.target_id=? AND e.type='CALLS' LIMIT 20", (nid,)
+                        ).fetchall()
+                    for e in edges:
+                        eid = e[0]
+                        indent = "  " * (d + 1)
+                        lines.append(f"{indent}[{e['type']}] {e['name']} ({e['file_path']}:{e['line']})")
+                        if eid not in visited and d < depth:
+                            visited.add(eid)
+                            queue.append((eid, d + 1))
+                lines.append("")
+
+        elif action == "dead":
+            rows = conn.execute("""
+                SELECT n.name, n.file_path, n.line, n.type
+                FROM nodes n
+                WHERE n.type IN ('function', 'method', 'coroutine')
+                  AND n.id NOT IN (SELECT DISTINCT target_id FROM edges WHERE type='CALLS')
+                  AND n.id NOT IN (SELECT DISTINCT source_id FROM edges WHERE type='CALLS')
+                ORDER BY n.name
+                LIMIT 50
+            """).fetchall()
+            lines.append(f"# Potentially dead code ({len(rows)} functions with no call edges)")
+            for r in rows:
+                lines.append(f"  [{r['type']}] {r['name']} ({r['file_path']}:{r['line']})")
+
+        elif action == "arch":
+            lines.append("# Architecture Analysis\n")
+            # Communities
+            comms = conn.execute("""
+                SELECT c.community_id, COUNT(*) as size, GROUP_CONCAT(n.name, ', ') as samples
+                FROM community c JOIN nodes n ON c.node_id=n.id
+                GROUP BY c.community_id ORDER BY size DESC LIMIT 10
+            """).fetchall()
+            if comms:
+                lines.append("## Communities (Louvain modularity)")
+                for c in comms:
+                    lines.append(f"  Community {c['community_id']}: {c['size']} nodes — {c['samples'][:120]}")
+            # Entry points
+            entries = conn.execute("""
+                SELECT n.name, n.file_path,
+                       (SELECT COUNT(*) FROM edges WHERE source_id=n.id AND type='CALLS') as out_c,
+                       (SELECT COUNT(*) FROM edges WHERE target_id=n.id AND type='CALLS') as in_c
+                FROM nodes n
+                WHERE n.type='file'
+                ORDER BY out_c DESC LIMIT 10
+            """).fetchall()
+            if entries:
+                lines.append("\n## File-level Call Activity")
+                for e in entries:
+                    lines.append(f"  {e['file_path']:<40} out={e['out_c']} in={e['in_c']}")
+            # Language breakdown
+            langs = conn.execute("SELECT type, COUNT(*) as cnt FROM nodes GROUP BY type ORDER BY cnt DESC").fetchall()
+            lines.append("\n## Node Types")
+            for l in langs[:10]:
+                lines.append(f"  {l['type']:<20} {l['cnt']:>6}")
+
+    finally:
+        conn.close()
+
+    return "\n".join(lines)
 
 
 def _find_index(project_root: str) -> str:
