@@ -205,6 +205,23 @@ LANG_PATTERNS = {
         ],
         "inherits": [],
     },
+    "c": {
+        "extensions": [".c"],
+        "symbols": [
+            (r"^\s*(?:typedef\s+)?struct\s+(?:__attribute__\s*\([^)]*\)\s*)?(\w+)\s*\{", "struct", 1),
+            (r"^\s*enum\s+(\w+)", "enum", 1),
+            (r"^\s*(?:static\s+|inline\s+|__attribute__\s*\([^)]*\)\s*)*(?:[\w*]+\s+)+(\w+)\s*\([^)]*\)\s*(?:\{|__attribute__)", "function", 1),
+            (r"^\s*typedef\s+.+\(\s*\*\s*(\w+)\s*\)\s*\([^)]*\)\s*;", "typedef", 1),
+            (r"^\s*typedef\s+.+\s+(\w+)\s*;", "typedef", 1),
+        ],
+        "imports": [
+            (r'^\s*#include\s+[<"]([^>"]+)[>"]', [1]),
+        ],
+        "calls": [
+            (r"\b(\w+)\s*\(", 1),
+        ],
+        "inherits": [],
+    },
     "capnp": {
         "extensions": [".capnp"],
         "symbols": [
@@ -371,8 +388,35 @@ class GraphDB:
         return None
 
     def find_nodes(self, type_: str | None = None, name: str | None = None,
-                   file_path: str | None = None) -> list[dict]:
-        """Find nodes by type, name, and/or file."""
+                   file_path: str | None = None, use_fts: bool = True) -> list[dict]:
+        """Find nodes by type, name, and/or file. Uses FTS5 prefix search when available."""
+        # Try FTS5 first for name search (prefix matching with *)
+        if name and use_fts:
+            try:
+                fts_query = name.replace('"', '""')  # Escape for FTS
+                if not fts_query.endswith('*'):
+                    fts_query += '*'
+                conditions = ["n.id IN (SELECT rowid FROM symbols_fts WHERE symbols_fts MATCH ?)"]
+                params: list = [fts_query]
+                if type_:
+                    conditions.append("n.type=?")
+                    params.append(type_)
+                if file_path:
+                    conditions.append("n.file_path=?")
+                    params.append(file_path)
+                where = " AND ".join(conditions)
+                cursor = self.conn.execute(
+                    f"SELECT n.id, n.type, n.name, n.file_path, n.line, n.lang FROM nodes n WHERE {where} LIMIT 200",
+                    params
+                )
+                rows = cursor.fetchall()
+                if rows:
+                    return [{"id": r[0], "type": r[1], "name": r[2], "file_path": r[3],
+                             "line": r[4], "lang": r[5]} for r in rows]
+            except Exception:
+                pass  # FTS may fail on special chars; fall through to LIKE
+
+        # Fallback: LIKE query
         conditions = []
         params = []
         if type_:
@@ -822,7 +866,7 @@ class IndexPipeline:
         """Create indexes and finalize storage."""
         t0 = time.time()
         self.db.conn.execute("ANALYZE")
-        self.db.conn.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')")
+        # FTS is populated during node insertion, no rebuild needed
         self.db.set_meta("pass_build_time_ms", str(int((time.time() - t0) * 1000)))
         self.db.commit()
 
@@ -976,7 +1020,10 @@ def _extract_symbols_from_file(args: tuple) -> tuple[str, list[dict], list[dict]
         for pattern, sym_type, group in symbol_patterns:
             m = re.search(pattern, line)
             if m:
-                name = m.group(group) if isinstance(group, int) else None
+                try:
+                    name = m.group(group) if isinstance(group, int) else None
+                except IndexError:
+                    continue  # Group index mismatch
                 if not name and isinstance(group, list):
                     for g in group:
                         name = m.group(g)

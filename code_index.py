@@ -455,7 +455,10 @@ def extract_symbols(lines: list[str], lang: str) -> list[dict]:
         for pattern, sym_type, group in cfg["symbols"]:
             m = re.search(pattern, line)
             if m:
-                name = m.group(group)
+                try:
+                    name = m.group(group)
+                except IndexError:
+                    continue  # Skip patterns where group index is out of range
                 if name:
                     symbols.append({"type": sym_type, "name": name, "line": i})
                     break
